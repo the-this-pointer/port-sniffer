@@ -206,7 +206,8 @@ _PrintIoctlResponse(
 
 static BOOL
 _PrintResponse(
-    __in PPORTSNIFFER_POP_PORTLOG_ENTRY_RESPONSE pPopResponse
+    __in PPORTSNIFFER_POP_PORTLOG_ENTRY_RESPONSE pPopResponse,
+    __in PPORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST pPopRequest
     )
 {
     char cType;
@@ -239,11 +240,11 @@ _PrintResponse(
         return FALSE;
     }
 
-    // Print in the format "UTC TIMESTAMP | TYPE | LENGTH | DATA".
-    printf("%04u-%02u-%02u %02u:%02u:%02u.%03u | %c | %4u |",
+    // Print in the format "UTC TIMESTAMP | PORT | TYPE | LENGTH | DATA".
+    printf("%04u-%02u-%02u %02u:%02u:%02u.%03u | %S | %c | %4u |",
            SystemTimeStamp.wYear, SystemTimeStamp.wMonth, SystemTimeStamp.wDay,
            SystemTimeStamp.wHour, SystemTimeStamp.wMinute, SystemTimeStamp.wSecond, SystemTimeStamp.wMilliseconds,
-           cType, pPopResponse->DataLength);
+           pPopRequest->PortName, cType, pPopResponse->DataLength);
 
     if (pPopResponse->Type == PORTSNIFFER_MONITOR_IOCTL)
     {
@@ -271,7 +272,8 @@ _PrintResponse(
 
 int
 HandleMonitorParameter(
-    __in PCWSTR pwszPort,
+    __in PCWSTR pwszPorts[],
+	__in unsigned int nPortCount,
     __in PCWSTR pwszTypes
     )
 {
@@ -279,24 +281,34 @@ HandleMonitorParameter(
     DWORD cbReturned;
     HANDLE hPortSniffer = INVALID_HANDLE_VALUE;
     int iReturnValue = 1;
+    unsigned int iPortIdx = 0;
     BYTE PopResponseBuffer[PORTSNIFFER_PORTLOG_ENTRY_LENGTH];
     PPORTSNIFFER_POP_PORTLOG_ENTRY_RESPONSE pPopResponse = (PPORTSNIFFER_POP_PORTLOG_ENTRY_RESPONSE)PopResponseBuffer;
-    PORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST PopRequest;
-    PORTSNIFFER_RESET_PORT_MONITORING_REQUEST ResetPortMonitoringRequest;
+    PORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST PopRequest[MAX_MONITORING_PORTS];
+    PORTSNIFFER_RESET_PORT_MONITORING_REQUEST ResetPortMonitoringRequest[MAX_MONITORING_PORTS];
 
-    // Check the input parameters and prepare the IOCTL requests.
-    if (wcslen(pwszPort) >= PORTSNIFFER_PORTNAME_LENGTH)
+    // Limit the ports to maximmum supported count
+    if (nPortCount > MAX_MONITORING_PORTS)
     {
-        fprintf(stderr, "Port name is too long: %S\n", pwszPort);
-        goto Cleanup;
+        nPortCount = MAX_MONITORING_PORTS;
     }
 
-    StringCchCopyW(PopRequest.PortName, PORTSNIFFER_PORTNAME_LENGTH, pwszPort);
-    StringCchCopyW(ResetPortMonitoringRequest.PortName, PORTSNIFFER_PORTNAME_LENGTH, pwszPort);
-
-    if (!_ParseTypes(pwszTypes, &ResetPortMonitoringRequest.MonitorMask))
+    // Check the input parameters and prepare the IOCTL requests.
+    for(iPortIdx = 0; iPortIdx < nPortCount; iPortIdx++)
     {
-        goto Cleanup;
+        if (wcslen(pwszPorts[iPortIdx]) >= PORTSNIFFER_PORTNAME_LENGTH)
+        {
+            fprintf(stderr, "Port name is too long: %S\n", pwszPorts[iPortIdx]);
+            goto Cleanup;
+        }
+
+        StringCchCopyW(PopRequest[iPortIdx].PortName, PORTSNIFFER_PORTNAME_LENGTH, pwszPorts[iPortIdx]);
+        StringCchCopyW(ResetPortMonitoringRequest[iPortIdx].PortName, PORTSNIFFER_PORTNAME_LENGTH, pwszPorts[iPortIdx]);
+
+        if (!_ParseTypes(pwszTypes, &ResetPortMonitoringRequest[iPortIdx].MonitorMask))
+        {
+            goto Cleanup;
+        }
     }
 
     // Connect to our driver.
@@ -312,27 +324,30 @@ HandleMonitorParameter(
         goto Cleanup;
     }
 
-    // Start monitoring on this port.
-    if (!DeviceIoControl(hPortSniffer,
-        (DWORD)PORTSNIFFER_IOCTL_CONTROL_RESET_PORT_MONITORING,
-        &ResetPortMonitoringRequest,
-        sizeof(PORTSNIFFER_RESET_PORT_MONITORING_REQUEST),
-        NULL,
-        0,
-        &cbReturned,
-        NULL))
+    // Start monitoring on ports.
+    for(iPortIdx = 0; iPortIdx < nPortCount; iPortIdx++)
     {
-        if (GetLastError() == ERROR_FILE_NOT_FOUND)
+        if (!DeviceIoControl(hPortSniffer,
+            (DWORD)PORTSNIFFER_IOCTL_CONTROL_RESET_PORT_MONITORING,
+            &ResetPortMonitoringRequest[iPortIdx],
+            sizeof(PORTSNIFFER_RESET_PORT_MONITORING_REQUEST),
+            NULL,
+            0,
+            &cbReturned,
+            NULL))
         {
-            fprintf(stderr, "The PortSniffer Driver is not attached to %S!\n", pwszPort);
-            fprintf(stderr, "Please run this tool using the /attach option.\n");
-        }
-        else
-        {
-            fprintf(stderr, "DeviceIoControl failed for PORTSNIFFER_IOCTL_CONTROL_RESET_PORT_MONITORING, last error is %lu.\n", GetLastError());
-        }
+            if (GetLastError() == ERROR_FILE_NOT_FOUND)
+            {
+                fprintf(stderr, "The PortSniffer Driver is not attached to %S!\n", ResetPortMonitoringRequest[iPortIdx].PortName);
+                fprintf(stderr, "Please run this tool using the /attach option.\n");
+            }
+            else
+            {
+                fprintf(stderr, "DeviceIoControl failed for PORTSNIFFER_IOCTL_CONTROL_RESET_PORT_MONITORING, last error is %lu.\n", GetLastError());
+            }
 
-        goto Cleanup;
+            goto Cleanup;
+        }
     }
 
     bMonitoringStarted = TRUE;
@@ -345,41 +360,51 @@ HandleMonitorParameter(
     }
 
     // Print the table header.
-    printf("UTC TIMESTAMP           | T |  LEN | DATA\n");
+    printf("UTC TIMESTAMP           | PORT | T |  LEN | DATA\n");
 
     // Fetch new port log entries from our driver until we are terminated.
     while (!_bTerminationRequested)
     {
-        if (!DeviceIoControl(hPortSniffer,
-            (DWORD)PORTSNIFFER_IOCTL_CONTROL_POP_PORTLOG_ENTRY,
-            &PopRequest,
-            sizeof(PORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST),
-            PopResponseBuffer,
-            sizeof(PopResponseBuffer),
-            &cbReturned,
-            NULL))
+        unsigned int iPortsNoMoreItems = 0;
+        for(iPortIdx = 0; iPortIdx < nPortCount; iPortIdx++)
         {
-            if (GetLastError() == ERROR_NO_MORE_ITEMS)
+            if (!DeviceIoControl(hPortSniffer,
+                (DWORD)PORTSNIFFER_IOCTL_CONTROL_POP_PORTLOG_ENTRY,
+                &PopRequest[iPortIdx],
+                sizeof(PORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST),
+                PopResponseBuffer,
+                sizeof(PopResponseBuffer),
+                &cbReturned,
+                NULL))
             {
-                Sleep(10);
-                continue;
+                if (GetLastError() == ERROR_NO_MORE_ITEMS)
+                {
+                    iPortsNoMoreItems++;
+                    continue;
+                }
+                else if (GetLastError() == ERROR_FILE_NOT_FOUND)
+                {
+                    fprintf(stderr, "The PortSniffer Driver is no longer attached to %S!\n", PopRequest[iPortIdx].PortName);
+                    fprintf(stderr, "Please run this tool using the /attach option.\n");
+                    goto Cleanup;
+                }
+                else
+                {
+                    fprintf(stderr, "DeviceIoControl failed for PORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST, last error is %lu.\n", GetLastError());
+                    goto Cleanup;
+                }
             }
-            else if (GetLastError() == ERROR_FILE_NOT_FOUND)
+
+            if (!_PrintResponse(pPopResponse, &PopRequest[iPortIdx]))
             {
-                fprintf(stderr, "The PortSniffer Driver is no longer attached to %S!\n", pwszPort);
-                fprintf(stderr, "Please run this tool using the /attach option.\n");
-                goto Cleanup;
-            }
-            else
-            {
-                fprintf(stderr, "DeviceIoControl failed for PORTSNIFFER_POP_PORTLOG_ENTRY_REQUEST, last error is %lu.\n", GetLastError());
                 goto Cleanup;
             }
         }
 
-        if (!_PrintResponse(pPopResponse))
+        if (iPortsNoMoreItems == nPortCount)
         {
-            goto Cleanup;
+            Sleep(10);
+            continue;
         }
     }
 
@@ -390,15 +415,18 @@ Cleanup:
     {
         // Tell our driver to stop monitoring now that we are gone.
         // Failure to do so won't really do any harm, but accumulate port log entries until we have MAX_LOG_ENTRIES_PER_PORT.
-        ResetPortMonitoringRequest.MonitorMask = PORTSNIFFER_MONITOR_NONE;
-        DeviceIoControl(hPortSniffer,
-            (DWORD)PORTSNIFFER_IOCTL_CONTROL_RESET_PORT_MONITORING,
-            &ResetPortMonitoringRequest,
-            sizeof(PORTSNIFFER_RESET_PORT_MONITORING_REQUEST),
-            NULL,
-            0,
-            &cbReturned,
-            NULL);
+        for(iPortIdx = 0; iPortIdx < nPortCount; iPortIdx++)
+        {
+            ResetPortMonitoringRequest[iPortIdx].MonitorMask = PORTSNIFFER_MONITOR_NONE;
+            DeviceIoControl(hPortSniffer,
+                (DWORD)PORTSNIFFER_IOCTL_CONTROL_RESET_PORT_MONITORING,
+                &ResetPortMonitoringRequest[iPortIdx],
+                sizeof(PORTSNIFFER_RESET_PORT_MONITORING_REQUEST),
+                NULL,
+                0,
+                &cbReturned,
+                NULL);
+        }
     }
 
     if (hPortSniffer != INVALID_HANDLE_VALUE)

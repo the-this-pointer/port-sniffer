@@ -26,11 +26,11 @@ _PrintUsage()
     printf("    /version                Get the version of the running driver.\n");
     printf("\n");
     printf("Monitoring:\n");
-    printf("    /monitor PORT TYPES     Monitor the given port.\n");
-    printf("                            TYPES may be one or more of:\n");
-    printf("                               R - Read requests\n");
-    printf("                               W - Write requests\n");
-    printf("                               C - IOCTL_SERIAL_* requests\n");
+    printf("    /monitor PORT1 PORT2 ... TYPES     Monitor the given port.\n");
+    printf("                                       TYPES may be one or more of:\n");
+    printf("                                           R - Read requests\n");
+    printf("                                           W - Write requests\n");
+    printf("                                           C - IOCTL_SERIAL_* requests\n");
     printf("\n");
 
     return 1;
@@ -94,9 +94,9 @@ wmain(
     {
         return HandleVersionParameter();
     }
-    else if (argc == 4 && wcscmp(argv[1], L"/monitor") == 0)
+    else if (argc > 3 && wcscmp(argv[1], L"/monitor") == 0)
     {
-        return HandleMonitorParameter(argv[2], argv[3]);
+        return HandleMonitorParameter(argv + 2, argc - 3, argv[argc - 1]);
     }
     else
     {

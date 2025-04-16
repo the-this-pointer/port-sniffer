@@ -9,6 +9,9 @@
 
 #include <ntddser.h>
 
+// Maximum ports that can be monitored simultaneously
+#define MAX_MONITORING_PORTS 10
+
 // A single page should be a sufficient maximum length for a single PORTSNIFFER_PORTLOG_POP_ENTRY_RESPONSE.
 // Always allocate an output buffer this large for PORTSNIFFER_IOCTL_CONTROL_PORTLOG_POP_ENTRY.
 #define PORTSNIFFER_PORTLOG_ENTRY_LENGTH    4096

@@ -54,7 +54,8 @@ HandleUninstallParameter(void);
 // monitoring.c
 int
 HandleMonitorParameter(
-    __in PCWSTR pwszPort,
+    __in PCWSTR pwszPorts[],
+	__in unsigned int nPortCount,
     __in PCWSTR pwszTypes
     );
 
